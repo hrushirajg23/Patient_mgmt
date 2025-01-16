@@ -1,28 +1,24 @@
-'''
-@Author: Hrushiraj Gandhi
-@Date: 14 jan 2025
-@goal:
-     a) To build patient management system 
-     b) Use fastapi , postgresql
-     c) Perform more operations than CRUD
-     
-'''
 from fastapi import FastAPI, HTTPException
 import psycopg2
 from pydantic import BaseModel
-from typing import Optional, Dict
+from typing import Optional, Dict, List
+from datetime import date
 
 app = FastAPI()
 
 class Patient(BaseModel):
     name: str
     age: int
+    gender: str
     condition: str
     patient_id: Optional[int] = None
     blood_group: Optional[str] = None
     mobile: Optional[str] = None
-
-patients_registry: Dict[int, Patient] = {}
+    visits: Optional[Dict[date, str]] = None
+    payments: Optional[Dict[date, float]] = None
+    prescriptions: Optional[Dict[date, List[str]]] = None
+    insurance: Optional[Dict[str, str]] = None
+    facilities_used: Optional[List[str]] = None
 
 def get_db_connection():
     return psycopg2.connect(
@@ -33,74 +29,208 @@ def get_db_connection():
         port="5432"
     )
 
-@app.put("/register")
-def create_patient(name: str, age: int, condition: str, blood_group: Optional[str] = None, mobile: Optional[str] = None) -> Patient:
-    patient_id = len(patients_registry) + 1
-    patient = Patient(name=name, age=age, condition=condition, blood_group=blood_group, mobile=mobile, patient_id=patient_id)
-    patients_registry[patient_id] = patient
-    
+@app.post("/patients")
+def create_patient(name: str, age: int, gender: str, condition: str, blood_group: Optional[str] = None, mobile: Optional[str] = None) -> Patient:
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
         cursor.execute(
-            "INSERT INTO patient_registry (patient_id, name, age, condition, blood_group, mobile) VALUES (%s, %s, %s, %s, %s, %s)",
-            (patient_id, name, age, condition, blood_group, mobile)
+            """
+            INSERT INTO patient_registry (name, age, gender, condition, blood_group, mobile)
+            VALUES (%s, %s, %s, %s, %s, %s) RETURNING patient_id;
+            """,
+            (name, age, gender, condition, blood_group, mobile)
         )
+        patient_id = cursor.fetchone()[0]
         conn.commit()
         cursor.close()
         conn.close()
+        return Patient(name=name, age=age, gender=gender, condition=condition, blood_group=blood_group, mobile=mobile, patient_id=patient_id)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
-    return patient
+@app.get("/patients/{patient_id}")
+def get_patient(patient_id: int) -> Patient:
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM patient_registry WHERE patient_id = %s", (patient_id,))
+        row = cursor.fetchone()
+        cursor.close()
+        conn.close()
+        if row:
+            return Patient(
+                patient_id=row[0],
+                name=row[1],
+                age=row[2],
+                gender=row[3],
+                condition=row[4],
+                blood_group=row[5],
+                mobile=row[6]
+            )
+        else:
+            raise HTTPException(status_code=404, detail="Patient not found")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
-@app.get("/show_patient_status")
-def show_patient_status(name: str, patient_id: int = None) -> Patient:
-    if patient_id is not None:
-        patient = patients_registry.get(patient_id)
-        if patient and patient.name == name:
-            return patient
-        raise HTTPException(status_code=404, detail="Patient ID not found")
-    else:
-        for patient_id, patient in patients_registry.items():
-            if patient.name == name:
-                return patient
-        raise HTTPException(status_code=404, detail="Patient not found")
+@app.put("/patients/{patient_id}")
+def update_patient(patient_id: int, name: Optional[str] = None, age: Optional[int] = None, gender: Optional[str] = None, condition: Optional[str] = None, blood_group: Optional[str] = None, mobile: Optional[str] = None):
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
 
-@app.post("/update_my_details")
-def update_my_details(patient_id: int, name: Optional[str] = None, age: Optional[int] = None, condition: Optional[str] = None, blood_group: Optional[str] = None, mobile: Optional[str] = None):
-    if patient_id not in patients_registry:
-        raise HTTPException(status_code=404, detail="Patient ID not found")
-    
-    patient = patients_registry[patient_id]
-    if name:
-        patient.name = name
-    if age:
-        patient.age = age
-    if condition:
-        patient.condition = condition
-    if blood_group:
-        patient.blood_group = blood_group
-    if mobile:
-        patient.mobile = mobile
-    
+        updates = []
+        params = []
+        if name:
+            updates.append("name = %s")
+            params.append(name)
+        if age:
+            updates.append("age = %s")
+            params.append(age)
+        if gender:
+            updates.append("gender = %s")
+            params.append(gender)
+        if condition:
+            updates.append("condition = %s")
+            params.append(condition)
+        if blood_group:
+            updates.append("blood_group = %s")
+            params.append(blood_group)
+        if mobile:
+            updates.append("mobile = %s")
+            params.append(mobile)
+
+        if not updates:
+            raise HTTPException(status_code=400, detail="No fields to update")
+
+        params.append(patient_id)
+        cursor.execute(f"UPDATE patient_registry SET {', '.join(updates)} WHERE patient_id = %s", params)
+        conn.commit()
+        cursor.close()
+        conn.close()
+        return {"message": "Patient updated successfully"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+
+@app.delete("/patients/{patient_id}")
+def delete_patient(patient_id: int):
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM patient_registry WHERE patient_id = %d", (patient_id,))
+        conn.commit()
+        cursor.close()
+        conn.close()
+        return {"message": "Patient deleted successfully"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+
+@app.get("/patients/{patient_id}/medical_history")
+def medical_history(patient_id: int):
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT visit_date, description FROM medical_history WHERE patient_id = %s", (patient_id,))
+        rows = cursor.fetchall()
+        cursor.close()
+        conn.close()
+        if not rows:
+            raise HTTPException(status_code=404, detail="No medical history found for this patient")
+
+        history = {row[0]: row[1] for row in rows}
+        return {"patient_id": patient_id, "medical_history": history}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+
+@app.post("/patients/{patient_id}/insurance")
+def add_insurance(patient_id: int, insurance_provider: str, policy_number: str):
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
         cursor.execute(
-            "UPDATE patient_registry SET name = %s, age = %s, condition = %s, blood_group = %s, mobile = %s WHERE patient_id = %s",
-            (patient.name, patient.age, patient.condition, patient.blood_group, patient.mobile, patient_id)
+            "INSERT INTO insurance_info (patient_id, provider, policy_number) VALUES (%d, %s, %s)",
+            (patient_id, insurance_provider, policy_number)
         )
         conn.commit()
         cursor.close()
         conn.close()
+        return {"message": "Insurance information added successfully"}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-    
-    return {"message": "Patient details updated successfully"}
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
-'''
-     Other methods
+@app.get("/patients/{patient_id}/insurance")
+def get_insurance(patient_id: int):
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT provider, policy_number FROM insurance_info WHERE patient_id = %s", (patient_id,))
+        rows = cursor.fetchall()
+        cursor.close()
+        conn.close()
+        if not rows:
+            raise HTTPException(status_code=404, detail="No insurance information found")
 
-     1. 
-'''
+        insurance = {"provider": rows[0][0], "policy_number": rows[0][1]}
+        return {"patient_id": patient_id, "insurance": insurance}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+
+@app.post("/patients/{patient_id}/prescriptions")
+def add_prescription(patient_id: int, date_prescribed: date, medicines: List[str]):
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT INTO prescriptions (patient_id, date_prescribed, medicines) VALUES (%d, %s, %s)",
+            (patient_id, date_prescribed, medicines)
+        )
+        conn.commit()
+        cursor.close()
+        conn.close()
+        return {"message": "Prescription added successfully"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+
+@app.get("/patients/{patient_id}/prescriptions")
+def get_prescriptions(patient_id: int):
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT date_prescribed, medicines FROM prescriptions WHERE patient_id = %d", (patient_id,))
+        rows = cursor.fetchall()
+        cursor.close()
+        conn.close()
+        if not rows:
+            raise HTTPException(status_code=404, detail="No prescriptions found")
+
+        prescriptions = {row[0]: row[1] for row in rows}
+        return {"patient_id": patient_id, "prescriptions": prescriptions}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+
+@app.post("/patients/{patient_id}/facilities")
+def add_facility_usage(patient_id: int, facility_name: str, usage_date: date):
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT INTO facility_usage (patient_id, facility_name, usage_date) VALUES (%s, %s, %s)",
+            (patient_id, facility_name, usage_date)
+        )
+        conn.commit()
+        cursor.close()
+        conn.close()
+        return {"message": "Facility usage recorded successfully"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+
+@app.get("/patients/{patient_id}/facilities")
+def get_facility_usage(patient_id: int):
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT facility_name, usage_date FROM facility_usage WHERE patient_id = %s", (patient_id,))
+        rows = cursor.fetchall()
+        cursor.close()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
